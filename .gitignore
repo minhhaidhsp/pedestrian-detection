@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.venv/
+
+# Training artifacts
+runs/
+checkpoints/
+*.pth
+*.pt
+
+# Data (downloaded separately, see README - Giai doan B)
+data/llvip/
+data/llvip_c/
+
+# Experiment tracking
+wandb/
+
+# Environment / secrets
+.env
+
+# Editor
+.vscode/*
+!.vscode/settings.json
+
+# Logs
+logs/*.log
+
+# OS
+.DS_Store
+Thumbs.db

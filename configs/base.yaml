@@ -1,0 +1,74 @@
+# =============================================================================
+# FA-PromptDETR — Base configuration
+# Central config file: all train/eval/inference scripts should read from this.
+# Reproduces "Implementation Details" of the FA-PromptDETR paper.
+# =============================================================================
+
+experiment:
+  name: fa_promptdetr_base
+  seed: 42
+  output_dir: runs/fa_promptdetr_base
+  device: cuda # falls back to cpu if unavailable
+
+data:
+  dataset: llvip
+  root: data/llvip
+  # Corrupted/robustness benchmark variant (LLVIP-C), used only in eval, see Giai doan B
+  corrupted_root: data/llvip_c
+  input_size: [640, 640]
+  num_classes: 1 # pedestrian
+  modalities: [rgb, thermal]
+  num_workers: 8
+
+model:
+  name: fa_promptdetr
+  backbone: resnet50 # TODO: paper does not explicitly pin backbone variant beyond DETR default -- confirm
+  decoder:
+    # Decoder channels reduced from 256 -> 128 per paper's lightweight decoder design
+    hidden_dim: 128
+    # P5 branch removed, P2 branch added (higher-resolution features for small/occluded pedestrians)
+    feature_levels: [p2, p3, p4]
+    drop_p5: true
+    add_p2: true
+  fa_vp:
+    # Frequency-Aware Visual Prompting module
+    enabled: true
+    # TODO(paper): Tikhonov regularization strength gamma (Eq. 1) not given a concrete
+    # value in the paper -- requires sweep. Placeholder only.
+    gamma: 0.01 # TODO: sweep -- paper does not specify (Eq. 1, Tikhonov regularization)
+    prompt_dim: 128
+  ian_fusion:
+    # Illumination-Aware (Night) fusion / sigmoid gating between RGB and thermal branches
+    enabled: true
+    # TODO(paper): alpha, beta of the sigmoid gating (Eq. 4) not given concrete values
+    # in the paper -- requires sweep. Placeholders only.
+    alpha: 1.0 # TODO: sweep -- paper does not specify (Eq. 4, sigmoid gating)
+    beta: 0.0  # TODO: sweep -- paper does not specify (Eq. 4, sigmoid gating)
+
+loss:
+  # Set matching / Hungarian loss weights (Eq. 8)
+  cls_weight: 2
+  l1_weight: 5
+  giou_weight: 2
+
+train:
+  optimizer: adamw
+  lr: 1e-4
+  weight_decay: 1e-4
+  epochs: 60
+  batch_size: 8
+  scheduler: cosine_annealing
+  warmup_epochs: 0 # TODO(paper): warmup schedule not specified -- confirm/sweep
+  grad_clip_norm: 0.1 # TODO(paper): not explicitly stated -- common DETR default, confirm
+
+wise_od:
+  # Weight-Space Ensembling between fine-tuned and zero-shot/base weights (Eq. 9)
+  enabled: true
+  lambda_interp: 0.5 # default per paper; sweep configs live in configs/lambda_sweep/
+
+eval:
+  metrics: [ap, ap50, ap75, mr]
+  batch_size: 8
+  score_threshold: 0.05
+  nms_iou_threshold: 0.5
+  eval_on: [llvip_test, llvip_c] # llvip_c corruption robustness eval, see Giai doan B
