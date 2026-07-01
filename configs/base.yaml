@@ -27,6 +27,23 @@ data:
 model:
   name: fa_promptdetr
   backbone: resnet50 # TODO: paper does not explicitly pin backbone variant beyond DETR default -- confirm
+  backbone_depth: 50
+  backbone_variant: d
+  pretrained_backbone: true
+  # DESIGN DECISION (Giai doan D, Buoc 2): backbone_ir also uses this pretrained
+  # ImageNet backbone -- IR images are replicated grayscale->3ch by the data
+  # pipeline (not by the model) specifically so this pretrained weight can be
+  # reused for both streams (Quyet dinh C).
+  encoder:
+    # Hybrid encoder (AIFI + CCFM), see models/encoder.py
+    nhead: 8
+    num_encoder_layers: 1
+    dim_feedforward: 1024
+    dropout: 0.0
+    enc_act: gelu
+    act: silu
+    expansion: 1.0
+    depth_mult: 1.0
   decoder:
     # Decoder channels reduced from 256 -> 128 per paper's lightweight decoder design
     hidden_dim: 128
@@ -34,6 +51,13 @@ model:
     feature_levels: [p2, p3, p4]
     drop_p5: true
     add_p2: true
+    num_queries: 300
+    nhead: 8
+    num_decoder_layers: 6
+    dim_feedforward: 1024
+    dropout: 0.0
+    activation: relu
+    num_decoder_points: 4
   fa_vp:
     # Frequency-Aware Visual Prompting module
     enabled: true
@@ -41,13 +65,29 @@ model:
     # value in the paper -- requires sweep. Placeholder only.
     gamma: 0.01 # TODO: sweep -- paper does not specify (Eq. 1, Tikhonov regularization)
     prompt_dim: 128
+    # DESIGN DECISION (Giai doan D, Buoc 6): paper does not specify whether FA-VP
+    # applies to RGB, IR, or both -- applied to BOTH here, via two independent
+    # (non-weight-sharing) FAVPModule instances (models/fa_promptdetr.py), since
+    # each modality has its own characteristic frequency content (RGB: high-freq
+    # texture; IR: smooth low-freq thermal gradients). Their resulting Pfreq
+    # lists are summed before injection into HybridEncoder (Pfreq_total[i] =
+    # Pfreq_rgb[i] + Pfreq_ir[i]) rather than extending HybridEncoder's
+    # freq_prompts API to take two separate lists. MUST be stated explicitly in
+    # the paper reproduction's Implementation Details -- not defined by the paper.
   ian_fusion:
     # Illumination-Aware (Night) fusion / sigmoid gating between RGB and thermal branches
     enabled: true
     # TODO(paper): alpha, beta of the sigmoid gating (Eq. 4) not given concrete values
     # in the paper -- requires sweep. Placeholders only.
     alpha: 1.0 # TODO: sweep -- paper does not specify (Eq. 4, sigmoid gating)
-    beta: 0.0  # TODO: sweep -- paper does not specify (Eq. 4, sigmoid gating)
+    # TODO: sweep -- paper does not specify (Eq. 4, sigmoid gating). MUST stay
+    # >= MIN_BETA (1e-3, models/ian_fusion.py) -- FusionHead.compute_weights
+    # clamps beta to that floor, and a value already at/below the floor gets
+    # ZERO gradient forever (clamp is locally constant in the saturated
+    # region), so it could never move even during a future sweep. Confirmed
+    # via Buoc 6 test_fa_promptdetr.py: the placeholder 0.0 previously here
+    # left fusion.fusion_heads.*.beta permanently untrained.
+    beta: 0.1
 
 loss:
   # Set matching / Hungarian loss weights (Eq. 8)
@@ -57,8 +97,12 @@ loss:
 
 train:
   optimizer: adamw
-  lr: 1e-4
-  weight_decay: 1e-4
+  # NOTE: written as 1.0e-4, not 1e-4 -- PyYAML's float regex requires a
+  # decimal point for scientific notation; "1e-4" (no ".") parses as a
+  # *string*, which broke torch.optim.AdamW(lr=...) with a TypeError
+  # (confirmed during Giai doan D, Buoc 6).
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
   epochs: 60
   batch_size: 8
   scheduler: cosine_annealing
