@@ -55,11 +55,53 @@ tests/                 # Unit test
 ## Dữ liệu
 
 Dữ liệu **LLVIP** và **LLVIP-C** (bản có nhiễu để đánh giá robustness) **không
-được commit lên Git** vì dung lượng quá lớn. Hướng dẫn tải và tổ chức dữ liệu
-sẽ được bổ sung ở **Giai đoạn B** (chưa thực hiện ở bước khởi tạo repo này).
+được commit lên Git** vì dung lượng quá lớn. Checkpoint (`*.pth`, `*.pt`) cũng
+không được commit — xem `.gitignore`.
 
-Checkpoint (`*.pth`, `*.pt`) cũng không được commit — xem `.gitignore`.
+### Chuẩn bị dữ liệu
+
+Dữ liệu LLVIP được đặt trên **Google Drive**, mount local trên Windows dưới
+dạng ổ `H:` (`H:\My Drive\Dataset\LLVIP`), cấu trúc theo repo gốc
+[bupt-ai-cz/LLVIP](https://github.com/bupt-ai-cz/LLVIP):
+
+```
+H:\My Drive\Dataset\LLVIP\
+  visible\train\   visible\test\    # ảnh RGB
+  infrared\train\  infrared\test\   # ảnh IR, cùng tên file với visible
+  Annotations\                      # XML Pascal VOC, dùng chung cho vis+ir
+  annotations_coco\                 # train.json / test.json (sinh ra, không commit)
+```
+
+Vì dữ liệu nằm trên Google Drive, cùng một mount này có thể tái sử dụng khi
+chuyển sang chạy trên Google Colab (mount Drive tương ứng) mà không cần upload
+lại dữ liệu.
+
+1. **Kiểm tra tính toàn vẹn dữ liệu** (đối chiếu số cặp ảnh với số liệu bài báo
+   train=12,025 / test=3,463):
+
+   ```bash
+   python data/scripts/verify_pairs.py --root "H:/My Drive/Dataset/LLVIP"
+   ```
+
+2. **Convert annotation VOC XML sang COCO JSON** (ghi vào
+   `H:/My Drive/Dataset/LLVIP/annotations_coco/`, không lưu trong repo):
+
+   ```bash
+   python data/scripts/convert_to_coco.py \
+       --root "H:/My Drive/Dataset/LLVIP" \
+       --out-dir "H:/My Drive/Dataset/LLVIP/annotations_coco"
+   ```
+
+3. **Kiểm tra lại file COCO JSON** vừa sinh bằng pycocotools:
+
+   ```bash
+   python data/scripts/check_coco.py --ann "H:/My Drive/Dataset/LLVIP/annotations_coco/train.json"
+   ```
+
+`configs/base.yaml` (`data.root`, `data.train_ann`, `data.val_ann`) đã trỏ sẵn
+về các đường dẫn này.
 
 ## Trạng thái hiện tại
 
-**Giai đoạn A - Repo skeleton hoàn tất.**
+**Giai đoạn B - Kiểm tra dữ liệu LLVIP hoàn tất** (dữ liệu khớp 100% số liệu
+bài báo, đã convert sang COCO JSON và xác thực bằng pycocotools).

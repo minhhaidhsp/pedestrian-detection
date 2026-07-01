@@ -12,7 +12,11 @@ experiment:
 
 data:
   dataset: llvip
-  root: data/llvip
+  # Dataset lives on Google Drive (mounted as H: locally, same mount reusable in Colab)
+  # not in the repo. Verified via data/scripts/verify_pairs.py (Giai doan B).
+  root: "H:/My Drive/Dataset/LLVIP"
+  train_ann: "H:/My Drive/Dataset/LLVIP/annotations_coco/train.json"
+  val_ann: "H:/My Drive/Dataset/LLVIP/annotations_coco/test.json"
   # Corrupted/robustness benchmark variant (LLVIP-C), used only in eval, see Giai doan B
   corrupted_root: data/llvip_c
   input_size: [640, 640]
