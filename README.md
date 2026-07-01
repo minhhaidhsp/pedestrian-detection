@@ -14,19 +14,25 @@ Dự án xây dựng lại kiến trúc DETR cho bài toán phát hiện ngườ
 
 ## Cài đặt
 
+**Yêu cầu: Python 3.11.x** (dự án được pin ở bản này để đảm bảo tương thích
+thư viện — không dùng 3.12/3.13/3.14).
+
 ```bash
-python -m venv .venv
-# Windows
+# Windows (dùng py launcher để chọn đúng bản 3.11)
+py -3.11 -m venv .venv
 .venv\Scripts\activate
+
 # Linux/macOS
+python3.11 -m venv .venv
 source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
 
 > **Lưu ý (Windows):** `pycocotools` và `torch` cần wheel tương thích với phiên
-> bản Python đang dùng. Nếu pip không tìm được wheel dựng sẵn, `pycocotools` sẽ
-> cố build từ source và cần Visual C++ Build Tools. Nếu build lỗi, có thể thử
+> bản Python đang dùng. Với Python 3.11, các package trong requirements.txt đều
+> có wheel dựng sẵn (không cần Visual C++ Build Tools). Nếu pip không tìm được
+> wheel dựng sẵn, `pycocotools` sẽ cố build từ source; có thể thử
 > `pip install pycocotools-windows` thay thế.
 
 ## Cấu trúc thư mục
