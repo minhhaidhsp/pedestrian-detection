@@ -33,18 +33,30 @@ class TikhonovFilter(nn.Module):
         return k_sq  # [H, W]
 
     def forward(self, img: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """img: [B, C, H, W] -> (I_low, I_high), both [B, C, H, W]."""
-        b, c, h, w = img.shape
-        k_sq = self._freq_grid(h, w, img.device, img.dtype)  # [H, W]
+        """img: [B, C, H, W] -> (I_low, I_high), both [B, C, H, W].
 
-        gamma = self.gamma.clamp(min=0.0) if self.learnable_gamma else self.gamma
-        denom = 1.0 + gamma * k_sq  # [H, W]
+        torch.fft.fft2/ifft2 are numerically unstable (and in some builds
+        unsupported) under fp16 autocast, so this always runs in fp32
+        regardless of any enclosing torch.autocast context, then casts the
+        result back to img's original dtype before returning -- callers under
+        autocast see a normal fp16 tensor on the way out, only the FFT math
+        itself is forced to fp32.
+        """
+        orig_dtype = img.dtype
+        with torch.autocast(device_type=img.device.type, enabled=False):
+            img_fp32 = img.float()
+            b, c, h, w = img_fp32.shape
+            k_sq = self._freq_grid(h, w, img_fp32.device, torch.float32)  # [H, W]
 
-        img_fft = torch.fft.fft2(img, dim=(-2, -1))  # [B, C, H, W] complex
-        low_fft = img_fft / denom.to(img_fft.dtype)
-        i_low = torch.fft.ifft2(low_fft, dim=(-2, -1)).real
-        i_high = img - i_low
-        return i_low, i_high
+            gamma = self.gamma.clamp(min=0.0) if self.learnable_gamma else self.gamma
+            denom = 1.0 + gamma.float() * k_sq  # [H, W]
+
+            img_fft = torch.fft.fft2(img_fp32, dim=(-2, -1))  # [B, C, H, W] complex
+            low_fft = img_fft / denom.to(img_fft.dtype)
+            i_low = torch.fft.ifft2(low_fft, dim=(-2, -1)).real
+            i_high = img_fp32 - i_low
+
+        return i_low.to(orig_dtype), i_high.to(orig_dtype)
 
 
 class FrequencyPromptProjector(nn.Module):

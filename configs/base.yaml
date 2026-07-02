@@ -105,6 +105,12 @@ train:
   weight_decay: 1.0e-4
   epochs: 60
   batch_size: 8
+  # Mixed precision (CUDA only -- ignored on CPU). Needed to fit batch_size=8
+  # at 640x640: fp32-only training OOM'd at 21.77 GiB before backward even
+  # started (P2 scale, 25,600 tokens/image, in decoder deformable attention).
+  # See train.py: torch.autocast + GradScaler; models/fa_vp.py TikhonovFilter
+  # forces its FFT math back to fp32 regardless (fp16 FFT is unstable).
+  amp: true
   scheduler: cosine_annealing
   warmup_epochs: 0 # TODO(paper): warmup schedule not specified -- confirm/sweep
   grad_clip_norm: 0.1 # TODO(paper): not explicitly stated -- common DETR default, confirm

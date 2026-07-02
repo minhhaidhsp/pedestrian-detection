@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import logging
 import time
 from datetime import datetime
@@ -29,6 +30,12 @@ def parse_args():
     parser.add_argument("--device", type=str, default=None, choices=["cuda", "cpu"], help="Force device (default: auto-detect)")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers (0 for clear local tracebacks)")
     parser.add_argument("--log-interval", type=int, default=10, help="Log training loss every N steps")
+    parser.add_argument(
+        "--grad-accum-steps",
+        type=int,
+        default=1,
+        help="Accumulate gradients over N steps before optimizer.step() (effective batch = batch_size * N)",
+    )
     return parser.parse_args()
 
 
@@ -74,7 +81,7 @@ def build_dataloader(config: dict, split: str, batch_size: int, subset_size: int
     )
 
 
-def save_checkpoint(path: Path, model, optimizer, scheduler, epoch: int, config: dict):
+def save_checkpoint(path: Path, model, optimizer, scheduler, scaler, epoch: int, config: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -82,6 +89,7 @@ def save_checkpoint(path: Path, model, optimizer, scheduler, epoch: int, config:
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict(),
             "config": config,
         },
         path,
@@ -103,9 +111,25 @@ def main():
 
     output_dir = Path(config["experiment"]["output_dir"])
     logger = setup_logger(Path("logs"))
+
+    # AMP is CUDA-only: torch.cuda.amp.GradScaler has no CPU equivalent, and
+    # CPU training was already verified fp32-only (Giai doan E). enabled=False
+    # makes autocast/GradScaler complete no-ops, so the rest of the loop below
+    # doesn't need a separate CPU/GPU code path.
+    accum_steps = max(args.grad_accum_steps, 1)
+    use_amp = bool(train_cfg.get("amp", False)) and device.type == "cuda"
+    autocast_ctx = (
+        torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp)
+        if device.type == "cuda"
+        else contextlib.nullcontext()
+    )
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    effective_batch = batch_size * accum_steps
     logger.info(f"Device: {device}")
     logger.info(f"Config: {args.config}")
     logger.info(f"max_epochs={max_epochs} batch_size={batch_size} subset_size={args.subset_size}")
+    logger.info(f"amp={use_amp} grad_accum_steps={accum_steps} effective_batch_size={effective_batch}")
 
     model = FAPromptDETR(config).to(device)
     optimizer = torch.optim.AdamW(
@@ -123,6 +147,10 @@ def main():
         # Allow --max-epochs to extend the cosine schedule beyond the run
         # that produced this checkpoint (state_dict restores the old T_max).
         scheduler.T_max = max_epochs
+        if "scaler_state_dict" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        else:
+            logger.info("Checkpoint has no scaler_state_dict (pre-AMP checkpoint) -- starting scaler fresh")
         start_epoch = checkpoint["epoch"] + 1
         logger.info(f"Resumed at epoch {checkpoint['epoch']}, continuing from epoch {start_epoch}")
 
@@ -139,24 +167,35 @@ def main():
         epoch_loss_sum = 0.0
         num_batches = 0
 
+        optimizer.zero_grad()
         for step, (rgb_imgs, ir_imgs, targets) in enumerate(dataloader, start=1):
             rgb_imgs = rgb_imgs.to(device)
             ir_imgs = ir_imgs.to(device)
             targets = [{k: (v.to(device) if torch.is_tensor(v) else v) for k, v in t.items()} for t in targets]
 
-            optimizer.zero_grad()
-            _, loss_dict = model(rgb_imgs, ir_imgs, targets)
-            loss = loss_dict["loss_total"]
-            loss.backward()
-            if grad_clip_norm:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-            optimizer.step()
+            with autocast_ctx:
+                _, loss_dict = model(rgb_imgs, ir_imgs, targets)
+                loss_total = loss_dict["loss_total"]
+                loss = loss_total / accum_steps
 
-            epoch_loss_sum += loss.item()
+            scaler.scale(loss).backward()
+
+            is_accum_boundary = (step % accum_steps == 0) or (step == len(dataloader))
+            if is_accum_boundary:
+                if grad_clip_norm:
+                    # Unscale before clipping -- gradients are still scaled by
+                    # the GradScaler's factor at this point (no-op if AMP is off).
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+            epoch_loss_sum += loss_total.item()
             num_batches += 1
 
             if step % args.log_interval == 0 or step == len(dataloader):
-                logger.info(f"epoch {epoch} step {step}/{len(dataloader)} loss_total={loss.item():.4f}")
+                logger.info(f"epoch {epoch} step {step}/{len(dataloader)} loss_total={loss_total.item():.4f}")
 
         scheduler.step()
         epoch_time = time.time() - epoch_start
@@ -164,7 +203,7 @@ def main():
         logger.info(f"epoch {epoch} done in {epoch_time:.1f}s, avg_loss_total={avg_loss:.4f}")
 
         checkpoint_path = output_dir / f"checkpoint_epoch{epoch}.pth"
-        save_checkpoint(checkpoint_path, model, optimizer, scheduler, epoch, config)
+        save_checkpoint(checkpoint_path, model, optimizer, scheduler, scaler, epoch, config)
         logger.info(f"Saved checkpoint: {checkpoint_path}")
 
     logger.info("Training finished.")
