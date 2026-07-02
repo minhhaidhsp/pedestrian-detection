@@ -1,9 +1,33 @@
+from pathlib import Path
+
+import pytest
 import torch
 
 from data.dataset import LLVIPDataset, collate_fn
+from models.fa_promptdetr import load_config
 
-LLVIP_ROOT = "H:/My Drive/Dataset/LLVIP"
-TRAIN_ANN = "H:/My Drive/Dataset/LLVIP/annotations_coco/train.json"
+try:
+    _config = load_config("configs/base.yaml")
+    LLVIP_ROOT = _config["data"]["root"]
+    TRAIN_ANN = _config["data"]["train_ann"]
+except FileNotFoundError:
+    LLVIP_ROOT = None
+    TRAIN_ANN = None
+
+_DATA_AVAILABLE = (
+    LLVIP_ROOT is not None
+    and Path(LLVIP_ROOT).is_dir()
+    and TRAIN_ANN is not None
+    and Path(TRAIN_ANN).is_file()
+)
+
+# These tests depend on the real LLVIP dataset (unlike the fake-tensor tests
+# elsewhere) -- skip cleanly rather than fail hard when it's not present in
+# the current environment (e.g. CI, or a machine without the Drive mount).
+pytestmark = pytest.mark.skipif(
+    not _DATA_AVAILABLE,
+    reason=f"Bỏ qua: không tìm thấy dữ liệu LLVIP thật tại {LLVIP_ROOT}, kiểm tra lại configs/base.yaml",
+)
 
 
 def _make_dataset(subset_size=5):

@@ -1,13 +1,34 @@
 import copy
+from pathlib import Path
 
+import pytest
 import torch
 
 from data.dataset import LLVIPDataset, collate_fn
 from eval.metrics import evaluate
 from models.fa_promptdetr import FAPromptDETR, load_config
 
-LLVIP_ROOT = "H:/My Drive/Dataset/LLVIP"
-TRAIN_ANN = "H:/My Drive/Dataset/LLVIP/annotations_coco/train.json"
+try:
+    _base_config = load_config("configs/base.yaml")
+    LLVIP_ROOT = _base_config["data"]["root"]
+    TRAIN_ANN = _base_config["data"]["train_ann"]
+except FileNotFoundError:
+    LLVIP_ROOT = None
+    TRAIN_ANN = None
+
+_DATA_AVAILABLE = (
+    LLVIP_ROOT is not None
+    and Path(LLVIP_ROOT).is_dir()
+    and TRAIN_ANN is not None
+    and Path(TRAIN_ANN).is_file()
+)
+
+# Depends on the real LLVIP dataset -- skip cleanly rather than fail hard
+# when it's not present in the current environment.
+pytestmark = pytest.mark.skipif(
+    not _DATA_AVAILABLE,
+    reason=f"Bỏ qua: không tìm thấy dữ liệu LLVIP thật tại {LLVIP_ROOT}, kiểm tra lại configs/base.yaml",
+)
 
 
 def _make_small_model():
