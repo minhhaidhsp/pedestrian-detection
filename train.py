@@ -182,14 +182,40 @@ def main():
 
             is_accum_boundary = (step % accum_steps == 0) or (step == len(dataloader))
             if is_accum_boundary:
+                skip_optimizer_step = False
                 if grad_clip_norm:
                     # Unscale before clipping -- gradients are still scaled by
                     # the GradScaler's factor at this point (no-op if AMP is off).
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
+                    total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
+                    # GradScaler's own inf/NaN check runs INSIDE unscale_(), i.e.
+                    # BEFORE this clip -- it cannot see corruption introduced by
+                    # clip_grad_norm_'s own norm computation (sum-of-squares over
+                    # all gradients can overflow to inf/NaN in fp32 even when
+                    # every individual gradient was finite going in). If that
+                    # happens, clip_coef = max_norm/(total_norm+eps) becomes
+                    # NaN/0 and every gradient gets multiplied by it -- silently
+                    # corrupting weights via optimizer.step() with NaN, which
+                    # GradScaler would not have blocked (confirmed: a training
+                    # run went from fully-finite outputs to 100% NaN in every
+                    # output tensor in a single step, with no NaN/Inf logged
+                    # anywhere before this point -- the classic signature of a
+                    # NaN weight update, not a NaN input/loss). Guard against it
+                    # explicitly: skip the optimizer step entirely if the
+                    # PRE-clip norm itself was already non-finite.
+                    if not torch.isfinite(total_norm):
+                        skip_optimizer_step = True
+                        logger.warning(
+                            f"epoch {epoch} step {step}: non-finite grad norm ({total_norm.item()}) -- "
+                            f"skipping optimizer.step() this iteration to avoid corrupting weights with NaN"
+                        )
+                if skip_optimizer_step:
+                    optimizer.zero_grad()
+                    scaler.update()
+                else:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
 
             epoch_loss_sum += loss_total.item()
             num_batches += 1
