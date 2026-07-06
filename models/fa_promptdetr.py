@@ -69,6 +69,20 @@ import torch.nn as nn
 import yaml
 
 from losses.detr_loss import HungarianMatcher, SetCriterion
+
+
+def _finite_stats(tensor: torch.Tensor) -> str:
+    """Human-readable min/max (over finite entries only) + NaN/Inf counts."""
+    finite_mask = torch.isfinite(tensor)
+    n_nan = torch.isnan(tensor).sum().item()
+    n_inf = torch.isinf(tensor).sum().item()
+    if finite_mask.any():
+        finite_vals = tensor[finite_mask]
+        return (
+            f"min={finite_vals.min().item():.6f} max={finite_vals.max().item():.6f} "
+            f"(n_nan={n_nan} n_inf={n_inf} of {tensor.numel()})"
+        )
+    return f"ALL non-finite (n_nan={n_nan} n_inf={n_inf} of {tensor.numel()})"
 from models.backbone import DualStreamBackbone
 from models.decoder import RTDETRTransformer
 from models.dual_fusion import MultiScaleFusion
@@ -171,6 +185,12 @@ class FAPromptDETR(nn.Module):
         # formula for query-selection supervision.
         self.criterion = SetCriterion(matcher, weight_dict=weight_dict)
 
+        # NaN/Inf diagnostics (Giai doan F, CUDA NaN investigation): stats from
+        # the last step where all 4 outputs were finite, so that when a
+        # NaN/Inf DOES appear we can report the trend (was it climbing toward
+        # this, or a sudden jump?) rather than just the crash frame alone.
+        self._last_finite_stats: dict[str, str] | None = None
+
     def _freq_prompt_target_shapes(self, height: int, width: int) -> list[tuple[int, int]]:
         return [(height // s, width // s) for s in BACKBONE_STRIDES]
 
@@ -193,6 +213,33 @@ class FAPromptDETR(nn.Module):
 
         decoder_out = {"pred_logits": outputs["pred_logits"], "pred_boxes": outputs["pred_boxes"]}
         encoder_out = {"pred_logits": outputs["enc_pred_logits"], "pred_boxes": outputs["enc_pred_boxes"]}
+
+        # NaN/Inf guard, checked right before matching/loss (Giai doan F): a
+        # NaN/Inf cost matrix inside HungarianMatcher's linear_sum_assignment
+        # is a *symptom* -- this catches it one step earlier, at its actual
+        # source (the model's own output), and reports which images were in
+        # the offending batch plus the value trend vs. the last good step.
+        to_check = {
+            "decoder pred_logits": outputs["pred_logits"],
+            "decoder pred_boxes": outputs["pred_boxes"],
+            "encoder pred_logits": outputs["enc_pred_logits"],
+            "encoder pred_boxes": outputs["enc_pred_boxes"],
+        }
+        non_finite = {name: t for name, t in to_check.items() if not torch.isfinite(t).all()}
+        if non_finite:
+            image_ids = [t.get("image_id") for t in targets]
+            lines = [f"NaN/Inf detected in model output(s): {list(non_finite.keys())}"]
+            lines.append(f"image_ids in this batch: {image_ids}")
+            for name, tensor in to_check.items():
+                lines.append(f"  current {name}: {_finite_stats(tensor)}")
+            if self._last_finite_stats is not None:
+                for name in to_check:
+                    lines.append(f"  previous good step {name}: {self._last_finite_stats.get(name, 'n/a')}")
+            else:
+                lines.append("  (no previous good step recorded -- NaN/Inf on the very first batch)")
+            raise RuntimeError("\n".join(lines))
+
+        self._last_finite_stats = {name: _finite_stats(t) for name, t in to_check.items()}
 
         decoder_losses = self.criterion(decoder_out, targets)
         encoder_losses = self.criterion(encoder_out, targets)
