@@ -11,6 +11,7 @@ still applied explicitly for robustness/defensiveness (Quyet dinh C, Buoc 2),
 not because the real files currently need it.
 """
 
+import logging
 from pathlib import Path
 
 import torch
@@ -20,6 +21,8 @@ from PIL import Image
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
+
+logger = logging.getLogger(__name__)
 
 
 class LLVIPDataset(torch.utils.data.Dataset):
@@ -82,6 +85,15 @@ class LLVIPDataset(torch.utils.data.Dataset):
         boxes = []
         for ann in anns:
             x, y, w, h = ann["bbox"]
+            if w <= 0 or h <= 0:
+                # Degenerate annotation (found via scripts/check_degenerate_boxes.py,
+                # Giai doan F NaN investigation): a zero/negative-size box has no
+                # physical meaning and, combined with fp16 AMP, can push
+                # generalized_box_iou's near-zero-area math into Inf/NaN.
+                logger.warning(
+                    f"Skipping degenerate annotation (w={w}, h={h}) in image_id={img_id} file={file_name}"
+                )
+                continue
             x1, y1 = x * scale_x, y * scale_y
             w_s, h_s = w * scale_x, h * scale_y
             cx = (x1 + w_s / 2) / target_w

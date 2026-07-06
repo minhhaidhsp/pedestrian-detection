@@ -30,6 +30,17 @@ def generalized_box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Ten
     Input convention: (x1, y1, x2, y2), with x2 >= x1 and y2 >= y1.
     boxes1: [N, 4], boxes2: [M, 4] -> giou: [N, M].
     """
+    # DESIGN DECISION (Giai doan F, CUDA NaN investigation): epsilon bumped
+    # from 1e-7 to 1e-4. 1e-7 sits right at the edge of fp16's subnormal
+    # range (~5.96e-8) -- under AMP (fp16 autocast), a division landing near
+    # that floor loses enough precision to become Inf/NaN instead of being
+    # safely clamped, especially with a near-zero-area box (verified: 5
+    # degenerate zero-width boxes existed in train.json, now filtered in
+    # data/dataset.py, but this guards the general case too, e.g. a
+    # collapsing predicted box during training). 1e-4 is verified
+    # (tests/test_detr_loss.py) to not measurably change GIoU for
+    # normal-sized, non-degenerate boxes.
+    eps = 1e-4
     area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
     area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
 
@@ -39,14 +50,14 @@ def generalized_box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Ten
     inter = wh[..., 0] * wh[..., 1]
 
     union = area1[:, None] + area2[None, :] - inter
-    iou = inter / union.clamp(min=1e-7)
+    iou = inter / union.clamp(min=eps)
 
     lt_c = torch.min(boxes1[:, None, :2], boxes2[None, :, :2])
     rb_c = torch.max(boxes1[:, None, 2:], boxes2[None, :, 2:])
     wh_c = (rb_c - lt_c).clamp(min=0)
     area_c = wh_c[..., 0] * wh_c[..., 1]
 
-    return iou - (area_c - union) / area_c.clamp(min=1e-7)
+    return iou - (area_c - union) / area_c.clamp(min=eps)
 
 
 def sigmoid_focal_loss(

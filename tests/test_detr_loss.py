@@ -35,6 +35,41 @@ def test_generalized_box_iou_identical_boxes_is_one():
     assert torch.allclose(giou, torch.ones(1, 1), atol=1e-6)
 
 
+def _reference_giou(boxes1: torch.Tensor, boxes2: torch.Tensor, eps: float) -> torch.Tensor:
+    """Same formula as generalized_box_iou, parametrized by eps directly, to
+    compare against a negligibly small epsilon (see test below)."""
+    area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
+    area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+    lt = torch.max(boxes1[:, None, :2], boxes2[None, :, :2])
+    rb = torch.min(boxes1[:, None, 2:], boxes2[None, :, 2:])
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[..., 0] * wh[..., 1]
+    union = area1[:, None] + area2[None, :] - inter
+    iou = inter / union.clamp(min=eps)
+    lt_c = torch.min(boxes1[:, None, :2], boxes2[None, :, :2])
+    rb_c = torch.max(boxes1[:, None, 2:], boxes2[None, :, 2:])
+    wh_c = (rb_c - lt_c).clamp(min=0)
+    area_c = wh_c[..., 0] * wh_c[..., 1]
+    return iou - (area_c - union) / area_c.clamp(min=eps)
+
+
+def test_epsilon_bump_does_not_distort_normal_box_giou():
+    # Giai doan F: eps was bumped 1e-7 -> 1e-4 for fp16/AMP safety (see
+    # generalized_box_iou's DESIGN DECISION comment). For normal, non-degenerate
+    # boxes, union/area_c are never anywhere near either epsilon value, so the
+    # clamp should be inert here -- confirm generalized_box_iou (using
+    # whatever eps it currently has) agrees with a reference computed at a
+    # negligible eps (1e-12), i.e. the bump doesn't measurably change results
+    # for ordinary boxes.
+    boxes1 = torch.tensor([[0.0, 0.0, 10.0, 10.0], [5.0, 5.0, 20.0, 15.0]])
+    boxes2 = torch.tensor([[2.0, 2.0, 12.0, 8.0], [6.0, 4.0, 18.0, 16.0]])
+
+    giou = generalized_box_iou(boxes1, boxes2)
+    reference = _reference_giou(boxes1, boxes2, eps=1e-12)
+
+    assert torch.allclose(giou, reference, atol=1e-6)
+
+
 def test_set_criterion_runs_and_is_finite_positive():
     torch.manual_seed(0)
     num_queries = 5
